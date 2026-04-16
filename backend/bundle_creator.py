@@ -4,6 +4,7 @@ Improved: deduplicate similar sources, filter trivial snippets, keep 3–5 good 
 """
 import random
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 from google.cloud import firestore
 
@@ -14,12 +15,15 @@ except ImportError:
 
 
 SOURCES_COLLECTION = "sources"
+RAW_ARTICLES_COLLECTION = "raw_articles"
 BUNDLES_COLLECTION = "bundles"
 
 # Minimum snippet length to consider useful (avoid empty/trivial)
 MIN_SNIPPET_LEN = 30
 # Max sources from same publisher (avoid over-representing one outlet)
 MAX_SAME_PUBLISHER = 2
+# In explainer mode, try to enrich with several pre-scraped raw articles
+EXPLAINER_RAW_MAX_SOURCES = 4
 
 
 def _normalize_for_similarity(s: str) -> str:
@@ -29,6 +33,11 @@ def _normalize_for_similarity(s: str) -> str:
 
 def _is_duplicate_source(a: dict, b: dict) -> bool:
     """True if sources are obviously duplicated (same publisher + very similar title)."""
+    url_a = (a.get("url") or "").strip().lower()
+    url_b = (b.get("url") or "").strip().lower()
+    if url_a and url_b and url_a == url_b:
+        return True
+
     pub_a = _normalize_for_similarity(a.get("publisher", ""))
     pub_b = _normalize_for_similarity(b.get("publisher", ""))
     if pub_a != pub_b:
@@ -42,6 +51,88 @@ def _is_duplicate_source(a: dict, b: dict) -> bool:
     words_b = set(title_b.split())
     overlap = len(words_a & words_b) / max(len(words_a), 1)
     return overlap >= 0.7
+
+
+def _normalize_date_yyyy_mm_dd(value) -> str:
+    """Best-effort date extraction for Firestore string/timestamp variants."""
+    if not value:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    s = str(value).strip()
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        return s[:10]
+
+    match = re.search(r"([A-Za-z]+\s+\d{1,2},\s+\d{4})", s)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ""
+
+    return ""
+
+
+def _raw_article_to_unified(doc_id: str, raw: dict, topic: str) -> dict | None:
+    """Map raw_articles documents to unified source schema expected by bundle builder."""
+    title = (raw.get("title") or "").strip()
+    url = (raw.get("url") or raw.get("uri") or "").strip()
+    if not title or not url:
+        return None
+
+    snippet = (raw.get("snippet") or raw.get("content") or title).strip()
+    if len(snippet) > 800:
+        snippet = snippet[:800].rsplit(" ", 1)[0] + "..."
+
+    content_hash = (raw.get("content_hash") or "").strip()
+    source_id = (raw.get("source_id") or f"raw_{(content_hash or doc_id)[:12]}").strip()
+    return {
+        "source_id": source_id,
+        "title": title,
+        "url": url,
+        "publisher": (raw.get("publisher") or "Unknown").strip() or "Unknown",
+        "published_at": str(raw.get("published_at") or ""),
+        "snippet": snippet,
+        "source_type": (raw.get("source_type") or "raw_articles").strip().lower(),
+        "topic": (raw.get("topic") or topic or "").strip(),
+        "category": (raw.get("category") or topic or "").strip(),
+        "content_hash": content_hash,
+        "processed": bool(raw.get("processed", False)),
+    }
+
+
+def _fetch_raw_article_sources(db: firestore.Client, topic: str, cutoff: str, limit: int) -> list[dict]:
+    """Fetch and normalize additional sources from raw_articles for explainer mode."""
+    docs = list(
+        db.collection(RAW_ARTICLES_COLLECTION)
+        .where("topic", "==", topic)
+        .limit(limit * 3)
+        .stream()
+    )
+
+    if len(docs) < limit:
+        extra = db.collection(RAW_ARTICLES_COLLECTION).where("category", "==", topic).limit(limit * 3).stream()
+        seen_ids = {d.id for d in docs}
+        for d in extra:
+            if d.id not in seen_ids:
+                docs.append(d)
+                seen_ids.add(d.id)
+
+    out: list[dict] = []
+    for d in docs:
+        src = _raw_article_to_unified(d.id, d.to_dict() or {}, topic)
+        if not src:
+            continue
+        pub_day = _normalize_date_yyyy_mm_dd(src.get("published_at", ""))
+        # Include if recent enough, or if date is missing/unparseable.
+        if not pub_day or pub_day >= cutoff:
+            out.append(src)
+
+    # Prefer not-yet-processed raw items first.
+    out.sort(key=lambda s: (s.get("processed", False),), reverse=False)
+    return out[:limit]
 
 
 def _filter_and_dedupe_sources(sources: list[dict], max_sources: int) -> list[dict]:
@@ -76,7 +167,7 @@ def _select_diverse_sources(sources: list[dict], max_sources: int) -> list[dict]
     """Prefer one source from each source_type when possible."""
     selected = []
     seen_types: set[str] = set()
-    for source_type in ("newsapi", "newsdata", "rss", "unknown"):
+    for source_type in ("newsapi", "newsdata", "rss", "raw_articles", "unknown"):
         for s in sources:
             t = (s.get("source_type") or "unknown").strip().lower()
             if t == source_type and s not in selected:
@@ -144,6 +235,16 @@ def create_bundle_from_sources(
         if not pub or pub >= cutoff:
             sources.append(s)
 
+    raw_sources: list[dict] = []
+    if (mode or "").strip().lower() == "explainer":
+        raw_sources = _fetch_raw_article_sources(
+            db,
+            topic=topic,
+            cutoff=cutoff,
+            limit=max(max_sources, EXPLAINER_RAW_MAX_SOURCES),
+        )
+        sources.extend(raw_sources)
+
     if len(sources) < min_sources:
         return {
             "ok": False,
@@ -167,12 +268,13 @@ def create_bundle_from_sources(
         "topic": topic,
         "sources": bundle_sources,
         "constraints": {"length_words": [400, 700], "target_language": "az"},
-        "created_from": "sources",
+        "created_from": "sources+raw_articles" if raw_sources else "sources",
     }
     db.collection(BUNDLES_COLLECTION).document(bundle_id).set(bundle)
     return {
         "ok": True,
         "bundle_id": bundle_id,
         "sources_count": len(bundle_sources),
+        "raw_sources_used": sum(1 for s in selected if (s.get("source_type") or "").strip().lower() == "raw_articles"),
         "topic": topic,
     }
