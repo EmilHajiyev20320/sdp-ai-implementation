@@ -96,7 +96,10 @@ def _raw_article_to_unified(doc_id: str, raw: dict, topic: str) -> dict | None:
         "publisher": (raw.get("publisher") or "Unknown").strip() or "Unknown",
         "published_at": str(raw.get("published_at") or ""),
         "snippet": snippet,
-        "source_type": (raw.get("source_type") or "raw_articles").strip().lower(),
+        # Keep a stable marker for bundle selection/counting, regardless of original feed type.
+        "source_type": "raw_articles",
+        "raw_source_type": (raw.get("source_type") or "unknown").strip().lower(),
+        "from_raw_articles": True,
         "topic": (raw.get("topic") or topic or "").strip(),
         "category": (raw.get("category") or topic or "").strip(),
         "content_hash": content_hash,
@@ -187,6 +190,8 @@ def _select_diverse_sources(sources: list[dict], max_sources: int) -> list[dict]
 
 
 def _is_raw_source(s: dict) -> bool:
+    if bool(s.get("from_raw_articles", False)):
+        return True
     return (s.get("source_type") or "").strip().lower() == "raw_articles"
 
 
