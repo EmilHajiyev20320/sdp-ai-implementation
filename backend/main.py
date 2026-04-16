@@ -7,7 +7,7 @@ _env_path = Path(__file__).resolve().parent.parent / ".env"
 # override=True: .env wins over empty or placeholder vars in the shell (common on Windows).
 load_dotenv(_env_path, override=True)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from google.cloud import firestore
 import os
@@ -76,6 +76,22 @@ def _model_version_string() -> str:
     ) else "api"
     mid = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     return f"gemini:{mid} ({loc}) writer+translator"
+
+
+def _is_resource_exhausted_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if "429" in msg or "resource exhausted" in msg:
+        return True
+    try:
+        from google.api_core import exceptions as gexc
+
+        return isinstance(exc, gexc.ResourceExhausted)
+    except Exception:
+        return False
+
+
+def _log_generation_failure(*, bundle_id: str, error_type: str, detail: str) -> None:
+    print(f"generation_failed bundle_id={bundle_id} error_type={error_type} detail={detail}")
 
 
 app = FastAPI()
@@ -447,7 +463,7 @@ def generate(req: GenerateRequest):
     bundle_ref = db.collection("bundles").document(req.bundle_id)
     bundle_doc = bundle_ref.get()
     if not bundle_doc.exists:
-        return {"ok": False, "error": "Bundle not found"}
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "Bundle not found"})
 
     bundle = bundle_doc.to_dict()
     sources = bundle.get("sources", [])
@@ -478,13 +494,19 @@ def generate(req: GenerateRequest):
             min_words_az=50,
         )
         if not ok:
-            return {
+            payload = {
                 "ok": False,
                 "error": "Article validation failed",
                 "validation_errors": details["errors"],
                 "flags": details.get("flags", {}),
                 "length_adjustment": length_meta,
             }
+            _log_generation_failure(
+                bundle_id=req.bundle_id,
+                error_type="ValidationError",
+                detail=str(details.get("errors", [])),
+            )
+            raise HTTPException(status_code=422, detail=payload)
 
         # First paragraph as lede
         lede_az = body_az.split("\n\n")[0].strip() if body_az else ""
@@ -515,14 +537,32 @@ def generate(req: GenerateRequest):
             "article_id": article_id,
             "quality_flags": {**details.get("flags", {}), "length_adjustment": length_meta},
         }
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
-        return {
-            "ok": False,
-            "error": "Generation failed",
-            "detail": str(e),
-            "error_type": type(e).__name__,
-        }
+        error_type = type(e).__name__
+        detail = str(e)
+        _log_generation_failure(bundle_id=req.bundle_id, error_type=error_type, detail=detail)
+        if _is_resource_exhausted_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "ok": False,
+                    "error": "Generation temporarily unavailable",
+                    "detail": detail,
+                    "error_type": error_type,
+                },
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "error": "Generation failed",
+                "detail": detail,
+                "error_type": error_type,
+            },
+        )
 
 
 @app.get("/admin/articles/{article_id}")
