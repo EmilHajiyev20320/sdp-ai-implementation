@@ -67,24 +67,4 @@ jobs:
           echo "Testing $STATUS_URL"
           export RESPONSE="$(curl -fsS "$STATUS_URL")"
           echo "$RESPONSE"
-
-          python - <<'PY'
-import json
-import os
-
-response = os.environ.get("RESPONSE", "")
-data = json.loads(response)
-
-required = ["project", "ai_backend", "gemini_configured"]
-missing = [key for key in required if key not in data]
-if missing:
-    raise SystemExit(f"Smoke test failed: missing keys {missing}")
-
-if data.get("project") != os.environ.get("PROJECT_ID"):
-    raise SystemExit(f"Smoke test failed: project mismatch {data.get('project')!r}")
-
-if not data.get("gemini_configured"):
-    raise SystemExit("Smoke test failed: Gemini not configured")
-
-print("Smoke test passed")
-PY
+            python scripts/smoke_test_status.py
