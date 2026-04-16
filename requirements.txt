@@ -1,0 +1,10 @@
+google-cloud-firestore>=2.0.0
+fastapi>=0.100.0
+python-dotenv>=1.0.0
+uvicorn[standard]>=0.22.0
+requests>=2.28.0
+feedparser>=6.0.0
+
+# Gemini: Google AI Studio (API key) and/or Vertex AI on GCP
+google-genai>=0.8.0
+google-cloud-aiplatform>=1.70.0

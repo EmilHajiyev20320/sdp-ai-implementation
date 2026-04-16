@@ -1,0 +1,15 @@
+# Environment (contains API keys)
+.env
+
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
