@@ -24,6 +24,7 @@ MIN_SNIPPET_LEN = 30
 MAX_SAME_PUBLISHER = 2
 # In explainer mode, try to enrich with several pre-scraped raw articles
 EXPLAINER_RAW_MAX_SOURCES = 4
+EXPLAINER_MIN_RAW_SOURCES = 2
 
 
 def _normalize_for_similarity(s: str) -> str:
@@ -185,6 +186,37 @@ def _select_diverse_sources(sources: list[dict], max_sources: int) -> list[dict]
     return selected
 
 
+def _is_raw_source(s: dict) -> bool:
+    return (s.get("source_type") or "").strip().lower() == "raw_articles"
+
+
+def _compose_explainer_selection(
+    all_sources: list[dict],
+    max_sources: int,
+    min_raw_sources: int,
+) -> list[dict]:
+    """Ensure explainer bundles include several raw sources when available."""
+    deduped = _filter_and_dedupe_sources(all_sources, max(len(all_sources), max_sources * 3))
+    raw_pool = [s for s in deduped if _is_raw_source(s)]
+    non_raw_pool = [s for s in deduped if not _is_raw_source(s)]
+
+    raw_target = min(max(min_raw_sources, 0), max_sources, len(raw_pool))
+
+    selected: list[dict] = []
+    if raw_target > 0:
+        selected.extend(_select_diverse_sources(raw_pool, raw_target))
+
+    if len(selected) < max_sources:
+        remaining = [s for s in non_raw_pool if s not in selected]
+        selected.extend(_select_diverse_sources(remaining, max_sources - len(selected)))
+
+    if len(selected) < max_sources:
+        fallback = [s for s in deduped if s not in selected]
+        selected.extend(fallback[: max_sources - len(selected)])
+
+    return selected[:max_sources]
+
+
 def create_bundle_from_sources(
     db: firestore.Client,
     topic: str,
@@ -251,9 +283,16 @@ def create_bundle_from_sources(
             "error": f"Not enough sources for topic '{topic}': found {len(sources)}, need {min_sources}",
         }
 
-    # Filter, dedupe, diversify publishers, then shuffle
-    selected = _filter_and_dedupe_sources(sources, max_sources)
-    selected = _select_diverse_sources(selected, max_sources)
+    # Filter, dedupe, diversify publishers, then shuffle.
+    if raw_sources and (mode or "").strip().lower() == "explainer":
+        selected = _compose_explainer_selection(
+            sources,
+            max_sources=max_sources,
+            min_raw_sources=EXPLAINER_MIN_RAW_SOURCES,
+        )
+    else:
+        selected = _filter_and_dedupe_sources(sources, max_sources)
+        selected = _select_diverse_sources(selected, max_sources)
     if len(selected) < min_sources:
         selected = sources[:max_sources]  # fallback if filtering too aggressive
         random.shuffle(selected)

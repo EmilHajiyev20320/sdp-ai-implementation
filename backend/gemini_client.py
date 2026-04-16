@@ -13,6 +13,7 @@ Unversioned ids (e.g. gemini-1.5-flash) often return 404 on v1beta for new keys;
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 # Try in order after GEMINI_MODEL (if set). IDs change; adjust from official model list.
@@ -104,6 +105,36 @@ def _raise_if_blocked_or_empty(response: Any, model_id: str) -> None:
     raise RuntimeError(msg)
 
 
+def _is_resource_exhausted(err: BaseException) -> bool:
+    msg = str(err).lower()
+    if "429" in msg or "resource exhausted" in msg:
+        return True
+    try:
+        from google.api_core import exceptions as gexc
+
+        return isinstance(err, gexc.ResourceExhausted)
+    except ImportError:
+        return False
+
+
+def _generate_with_retries(model, prompt: str, cfg, model_id: str):
+    retries = int(os.environ.get("GEMINI_RETRIES", "2"))
+    base_delay = float(os.environ.get("GEMINI_RETRY_BASE_SECONDS", "2"))
+    attempt = 0
+    while True:
+        try:
+            response = model.generate_content(prompt, generation_config=cfg)
+            _raise_if_blocked_or_empty(response, model_id)
+            return response
+        except Exception as e:
+            if attempt >= retries or not _is_resource_exhausted(e):
+                raise
+            # Exponential backoff for transient quota spikes.
+            sleep_seconds = base_delay * (2 ** attempt)
+            time.sleep(sleep_seconds)
+            attempt += 1
+
+
 def generate_content(
     prompt: str,
     *,
@@ -130,8 +161,7 @@ def generate_content(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
         )
-        response = model.generate_content(prompt, generation_config=cfg)
-        _raise_if_blocked_or_empty(response, model_id)
+        response = _generate_with_retries(model, prompt, cfg, model_id)
         return _response_text(response)
 
     api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
