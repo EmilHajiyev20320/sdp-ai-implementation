@@ -13,8 +13,7 @@ MODE_INSTRUCTIONS = {
     "explainer": (
         "Write an explainer article that educates the reader. "
         "Explain the how and why clearly. Use a structured approach: "
-        "introduce the topic, explain key concepts, then summarize implications. "
-        "The first paragraph must function as a short lede: 2 sentences max, concise, and factual."
+        "introduce the topic, explain key concepts, then summarize implications."
     ),
     "az_tech": (
         "Write a tech news article in English for an Azerbaijani audience. "
@@ -64,48 +63,14 @@ STRICT RULES:
 1. Write in English only. Use only the basic Latin alphabet and do not include Azerbaijani letters or Azerbaijani words.
 2. Length: exactly {lo}–{hi} words. Count and stay within this range.
 3. Use ONLY the information in the sources below. Do not invent facts or URLs.
-4. Structure: a short opening lede paragraph, 2–3 body paragraphs, brief conclusion.
-5. The opening lede must be 2 sentences max and must not look like a heading, subtitle, or summary block.
-6. Do not repeat the article title inside the first paragraph.
-7. Do not use Markdown headings, numbered sections, bullet points, or subheadings in the body.
-8. Do not place URLs or citations inside article paragraphs.
-9. End with a short "Sources" section listing only the URLs you used (one per line).
-10. If you detect any Azerbaijani words or characters, rewrite the text in English immediately.
+4. First line must be a unique, specific article title (not generic and not repeated from previous outputs).
+5. Structure: clear intro paragraph, 2–3 body paragraphs, brief conclusion.
+6. Do not use Markdown headings, numbered sections, bullet points, or subheadings in the body.
+7. Do not place URLs or citations inside article paragraphs.
+8. End with a short "Sources" section listing only the URLs you used (one per line).
+9. If you detect any Azerbaijani words or characters, rewrite the text in English immediately.
 
 SOURCES (use these and no others):
 {snippets}
 
 Write the article now.""".strip()
-
-
-def build_title_prompt(mode: str, topic: str, sources: list[dict], body_en: str) -> str:
-    """Build a prompt for a specific, non-generic article title."""
-    snippets = "\n\n".join(
-        [
-            f"Source {i + 1} ({s.get('url', '')}):\n{s.get('snippet', '')}"
-            for i, s in enumerate(sources[:5])
-        ]
-    )
-    opening = (body_en or "").strip().split("\n\n")[0].strip()
-    return f"""You are an experienced news editor.
-
-Write ONE specific English article title for the content below.
-
-Rules:
-1. Output only the title, no quotes, no explanation, no markdown.
-2. Make it concrete and specific to the main event or topic.
-3. Avoid generic phrases like Key Updates, Draft, Latest News, or General Overview.
-4. Keep it 4 to 10 words.
-5. Capitalize like a normal news title.
-6. Do not include Azerbaijani words or characters.
-
-MODE: {mode}
-TOPIC: {topic}
-
-ARTICLE OPENING:
-{opening}
-
-SOURCE HINTS:
-{snippets}
-
-Return only the title now.""".strip()

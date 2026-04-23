@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 # Support running as "uvicorn main:app" from backend/ or "uvicorn backend.main:app" from root
 try:
-    from backend.translator import generate_az_lede, translate_en_to_az, translate_en_to_az_long
+    from backend.translator import translate_en_to_az, translate_en_to_az_long
     from backend.text_writer import write_english_article
     from backend.gemini_client import gemini_configured
     from backend.prompts import build_writer_prompt
@@ -40,7 +40,7 @@ try:
     from backend.sources_storage import save_sources, list_sources
     from backend.bundle_creator import create_bundle_from_sources
 except ImportError:
-    from translator import generate_az_lede, translate_en_to_az, translate_en_to_az_long
+    from translator import translate_en_to_az, translate_en_to_az_long
     from text_writer import write_english_article
     from gemini_client import gemini_configured
     from prompts import build_writer_prompt
@@ -224,25 +224,6 @@ def extract_title_and_body(text_en: str, topic: str) -> tuple[str, str]:
 def translate_to_az(text_en: str) -> str:
     """Translate English text to Azerbaijani (Gemini)."""
     return translate_en_to_az(text_en)
-
-
-def build_lede_az(title_en: str, body_en: str, body_az: str) -> str:
-    """Build a short Azerbaijani lede that does not reuse the body opening verbatim."""
-    # Optional separate LLM call for lede; disabled by default to keep latency low.
-    if os.environ.get("GENERATE_SEPARATE_AZ_LEDE", "").strip().lower() in ("1", "true", "yes", "on"):
-        lede = generate_az_lede(title_en, body_en)
-        if lede and lede.strip():
-            return lede.strip()
-
-    # Fallback: use the first sentence of the translated body instead of the whole first paragraph.
-    first_paragraph = (body_az or "").strip().split("\n\n")[0].strip()
-    if not first_paragraph:
-        return ""
-
-    sentence_end = re.search(r"[.!?](\s|$)", first_paragraph)
-    if sentence_end:
-        return first_paragraph[: sentence_end.end()].strip()
-    return first_paragraph
 
 
 def split_body_and_sources(body_en: str) -> tuple[str, str]:
@@ -556,8 +537,8 @@ def generate(req: GenerateRequest):
             )
             raise HTTPException(status_code=422, detail=payload)
 
-        # Short dedicated lede so the header field stays concise and does not mirror the full first paragraph.
-        lede_az = build_lede_az(out_en["title_en"], out_en["body_en"], body_az)
+        # First paragraph as lede
+        lede_az = body_az.split("\n\n")[0].strip() if body_az else ""
 
         # 4) Store article
         article_id = f"art_{uuid.uuid4().hex[:10]}"
