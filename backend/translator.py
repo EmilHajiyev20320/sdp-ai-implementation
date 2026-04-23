@@ -12,6 +12,17 @@ Output ONLY the Azerbaijani translation with no title, quotes, or preamble.
 English:
 """
 
+_LEDE_INSTRUCTION = """Write a short Azerbaijani lede for the article below.
+Rules:
+- Use the Latin alphabet.
+- Keep it to 1 short paragraph.
+- Use 1 to 2 sentences only.
+- Keep it concise and informative.
+- Do not include the title, quotes, bullet points, or any preamble.
+
+Article title:
+"""
+
 
 def translate_en_to_az(text_en: str) -> str:
     if not text_en or not text_en.strip():
@@ -70,3 +81,21 @@ def translate_en_to_az_long(text_en: str, max_chunk_words: int = 80) -> str:
                     traceback.print_exc()
                     translated.append(chunk)  # Keep original if translation fails
     return "\n\n".join(translated)
+
+
+def generate_az_lede(title_en: str, body_en: str) -> str:
+    """Generate a short Azerbaijani lede from the English title and article body."""
+    if not body_en or not body_en.strip():
+        return ""
+
+    article_part = body_en.strip().split("\n\n")[0].strip()
+    prompt = (
+        f"{_LEDE_INSTRUCTION}{title_en.strip()}\n\n"
+        f"Article body opening:\n{article_part}"
+    )
+    try:
+        lede = generate_content(prompt, temperature=0.15, max_output_tokens=256)
+        return lede.strip()
+    except Exception:
+        # Fallback: translate the first paragraph if direct lede generation fails.
+        return translate_en_to_az(article_part)

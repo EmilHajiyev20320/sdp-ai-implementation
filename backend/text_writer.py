@@ -3,8 +3,10 @@ import re
 
 try:
     from backend.gemini_client import generate_content
+    from backend.prompts import build_title_prompt
 except ImportError:
     from gemini_client import generate_content
+    from prompts import build_title_prompt
 
 
 def _looks_like_azerbaijani(text: str) -> bool:
@@ -39,3 +41,37 @@ def write_english_article(prompt: str) -> str:
     if _looks_like_azerbaijani(body):
         body = translate_to_english(body)
     return body
+
+
+def _is_generic_title(title: str, topic: str) -> bool:
+    if not title or not title.strip():
+        return True
+    normalized = title.strip().lower()
+    generic_markers = [
+        "key updates",
+        "draft",
+        "latest news",
+        "general overview",
+        "update",
+        "overview",
+    ]
+    if any(marker in normalized for marker in generic_markers):
+        return True
+    topic_norm = (topic or "").strip().lower()
+    if topic_norm and normalized == topic_norm:
+        return True
+    return False
+
+
+def generate_english_title(mode: str, topic: str, sources: list[dict], body_en: str) -> str:
+    """Generate a concise, specific English title for the article."""
+    prompt = build_title_prompt(mode, topic, sources, body_en)
+    title = generate_content(prompt, temperature=0.2, max_output_tokens=64).strip()
+
+    if _is_generic_title(title, topic):
+        # Fallback: use a simple but more descriptive topic-based title.
+        title = f"{topic}: Key Developments"
+
+    # Strip bullet markers/quotes if the model adds them.
+    title = re.sub(r'^["\'\-\s]+|["\'\-\s]+$', '', title).strip()
+    return title
