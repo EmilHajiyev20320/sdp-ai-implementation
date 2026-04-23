@@ -25,6 +25,7 @@ MAX_SAME_PUBLISHER = 2
 # In explainer mode, try to enrich with several pre-scraped raw articles
 EXPLAINER_RAW_MAX_SOURCES = 4
 EXPLAINER_MIN_RAW_SOURCES = 2
+RECENT_BUNDLE_LOOKBACK = 8
 
 
 def _normalize_for_similarity(s: str) -> str:
@@ -222,6 +223,41 @@ def _compose_explainer_selection(
     return selected[:max_sources]
 
 
+def _collect_recent_bundle_source_keys(
+    db: firestore.Client,
+    topic: str,
+    lookback: int = RECENT_BUNDLE_LOOKBACK,
+) -> set[str]:
+    """Collect source ids/urls from recent bundles to reduce repeated source mixes."""
+    docs = list(
+        db.collection(BUNDLES_COLLECTION)
+        .where("topic", "==", topic)
+        .limit(lookback)
+        .stream()
+    )
+    seen: set[str] = set()
+    for d in docs:
+        data = d.to_dict() or {}
+        for s in data.get("sources", []) or []:
+            sid = (s.get("source_id") or "").strip()
+            surl = (s.get("url") or "").strip().lower()
+            if sid:
+                seen.add(f"id:{sid}")
+            if surl:
+                seen.add(f"url:{surl}")
+    return seen
+
+
+def _is_recently_used_source(source: dict, recent_keys: set[str]) -> bool:
+    sid = (source.get("source_id") or "").strip()
+    surl = (source.get("url") or "").strip().lower()
+    if sid and f"id:{sid}" in recent_keys:
+        return True
+    if surl and f"url:{surl}" in recent_keys:
+        return True
+    return False
+
+
 def create_bundle_from_sources(
     db: firestore.Client,
     topic: str,
@@ -245,10 +281,11 @@ def create_bundle_from_sources(
         Bundle dict with bundle_id, or error
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    fetch_limit = max(max_sources * 8, 30)
     q = (
         db.collection(SOURCES_COLLECTION)
         .where("topic", "==", topic)
-        .limit(max_sources * 3)  # fetch extra in case some filtered out
+        .limit(fetch_limit)  # larger pool for more diverse sampling
     )
     docs = list(q.stream())
     # Also try category for RSS (we store topic in both)
@@ -256,7 +293,7 @@ def create_bundle_from_sources(
         q2 = (
             db.collection(SOURCES_COLLECTION)
             .where("category", "==", topic)
-            .limit(max_sources * 3)
+            .limit(fetch_limit)
         )
         seen_ids = {d.id for d in docs}
         for d in q2.stream():
@@ -278,7 +315,7 @@ def create_bundle_from_sources(
             db,
             topic=topic,
             cutoff=cutoff,
-            limit=max(max_sources, EXPLAINER_RAW_MAX_SOURCES),
+            limit=max(max_sources * 2, EXPLAINER_RAW_MAX_SOURCES),
         )
         sources.extend(raw_sources)
 
@@ -288,18 +325,22 @@ def create_bundle_from_sources(
             "error": f"Not enough sources for topic '{topic}': found {len(sources)}, need {min_sources}",
         }
 
+    recent_keys = _collect_recent_bundle_source_keys(db, topic=topic)
+    fresh_sources = [s for s in sources if not _is_recently_used_source(s, recent_keys)]
+    source_pool = fresh_sources if len(fresh_sources) >= min_sources else sources
+
     # Filter, dedupe, diversify publishers, then shuffle.
     if raw_sources and (mode or "").strip().lower() == "explainer":
         selected = _compose_explainer_selection(
-            sources,
+            source_pool,
             max_sources=max_sources,
             min_raw_sources=EXPLAINER_MIN_RAW_SOURCES,
         )
     else:
-        selected = _filter_and_dedupe_sources(sources, max_sources)
+        selected = _filter_and_dedupe_sources(source_pool, max_sources)
         selected = _select_diverse_sources(selected, max_sources)
     if len(selected) < min_sources:
-        selected = sources[:max_sources]  # fallback if filtering too aggressive
+        selected = source_pool[:max_sources]  # fallback if filtering too aggressive
         random.shuffle(selected)
 
     bundle_id = f"bundle_{uuid.uuid4().hex[:12]}"
@@ -320,5 +361,7 @@ def create_bundle_from_sources(
         "bundle_id": bundle_id,
         "sources_count": len(bundle_sources),
         "raw_sources_used": sum(1 for s in selected if (s.get("source_type") or "").strip().lower() == "raw_articles"),
+        "fresh_sources_pool": len(fresh_sources),
+        "recent_sources_avoided": len(sources) - len(fresh_sources),
         "topic": topic,
     }

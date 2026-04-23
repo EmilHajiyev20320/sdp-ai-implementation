@@ -152,31 +152,45 @@ def fetch_articles_randomized(
         "techradar.com",
     ]
 
-    chosen_domains = rng.sample(tech_domains, k=min(5, len(tech_domains)))
-    domains_param = ",".join(chosen_domains)
-
     pool = list(NEWSAPI_TECH_QUERIES)
     if topic and topic.strip():
         t = topic.strip().lower()
         if t not in {"technology", "tech"}:
             pool.extend([topic.strip(), None])
-    q_choice = rng.choice(pool)
-    if q_choice is None and topic and topic.strip() and rng.random() < 0.3:
-        q_choice = topic.strip()
 
-    articles = fetch_articles(
-        q=q_choice,
-        language=language,
-        domains=domains_param,
-        page_size=max_results,
-        sort_by="publishedAt",
-    )
-    articles = list(articles)
+    rounds = 2 if max_results <= 10 else 3
+    merged: list[dict] = []
+    seen_urls: set[str] = set()
+    picks: list[dict] = []
+
+    for i in range(rounds):
+        chosen_domains = rng.sample(tech_domains, k=min(5, len(tech_domains)))
+        domains_param = ",".join(chosen_domains)
+
+        q_choice = rng.choice(pool)
+        if q_choice is None and topic and topic.strip() and rng.random() < 0.35:
+            q_choice = topic.strip()
+
+        batch = fetch_articles(
+            q=q_choice,
+            language=language,
+            domains=domains_param,
+            page_size=max(10, max_results),
+            sort_by="publishedAt" if i % 2 == 0 else "relevancy",
+        )
+        picks.append({"domains": chosen_domains, "domains_param": domains_param, "q": q_choice})
+        for art in batch:
+            url = (art.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged.append(art)
+
+    articles = list(merged)
     rng.shuffle(articles)
     meta = {
-        "domains": chosen_domains,
-        "domains_param": domains_param,
-        "q": q_choice,
+        "picks": picks,
+        "distinct_articles": len(articles),
         "tech_focus": True,
     }
     return articles[:max_results], meta

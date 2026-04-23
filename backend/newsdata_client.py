@@ -128,34 +128,48 @@ def fetch_articles_randomized(
         (articles, meta) where meta includes chosen category list and q for logging/UI.
     """
     rng = rng or random.Random()
-    chosen_cats = ["technology"]
-    extras = list(NEWSDATA_TECH_CATEGORY_EXTRAS)
-    n_extra = rng.randint(0, min(2, len(extras)))
-    if n_extra:
-        chosen_cats.extend(rng.sample(extras, k=n_extra))
-    category_param = ",".join(chosen_cats)
-
     pool = list(NEWSDATA_TECH_QUERIES)
     if topic and topic.strip():
         t = topic.strip().lower()
         if t not in {"technology", "tech"}:
             pool.extend([topic.strip(), None])
-    q_choice = rng.choice(pool)
-    if q_choice is None and topic and topic.strip() and rng.random() < 0.3:
-        q_choice = topic.strip()
 
-    articles = fetch_articles(
-        q=q_choice,
-        language=language,
-        category=category_param,
-        max_results=max_results,
-    )
-    articles = list(articles)
+    rounds = 2 if max_results <= 10 else 3
+    merged: list[dict] = []
+    seen_links: set[str] = set()
+    picks: list[dict] = []
+
+    for _ in range(rounds):
+        chosen_cats = ["technology"]
+        extras = list(NEWSDATA_TECH_CATEGORY_EXTRAS)
+        n_extra = rng.randint(0, min(3, len(extras)))
+        if n_extra:
+            chosen_cats.extend(rng.sample(extras, k=n_extra))
+        category_param = ",".join(chosen_cats)
+
+        q_choice = rng.choice(pool)
+        if q_choice is None and topic and topic.strip() and rng.random() < 0.35:
+            q_choice = topic.strip()
+
+        batch = fetch_articles(
+            q=q_choice,
+            language=language,
+            category=category_param,
+            max_results=max(10, max_results),
+        )
+        picks.append({"categories": chosen_cats, "category_param": category_param, "q": q_choice})
+        for art in batch:
+            link = (art.get("link") or "").strip()
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+            merged.append(art)
+
+    articles = list(merged)
     rng.shuffle(articles)
     meta = {
-        "categories": chosen_cats,
-        "category_param": category_param,
-        "q": q_choice,
+        "picks": picks,
+        "distinct_articles": len(articles),
         "tech_focus": True,
     }
     return articles[:max_results], meta
