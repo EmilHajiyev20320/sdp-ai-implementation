@@ -48,6 +48,23 @@ def extract_bundle_id(**context):
     print(f"Bundle ID extracted: {bundle_id}")
 
 
+def select_mode_for_run(**context):
+    """Select article mode based on scheduled run hour (UTC)."""
+    logical_date = context.get('logical_date')
+    hour = logical_date.hour if logical_date else datetime.utcnow().hour
+
+    # 06:00 -> global_news, 14:00 -> explainer, 20:00 -> az_tech
+    hour_to_mode = {
+        6: "global_news",
+        14: "explainer",
+        20: "az_tech",
+    }
+    mode = hour_to_mode.get(hour, "explainer")
+
+    context['task_instance'].xcom_push(key='selected_mode', value=mode)
+    print(f"Selected mode for hour={hour}: {mode}")
+
+
 # Task 1: Fetch from RSS feeds
 fetch_rss = SimpleHttpOperator(
     task_id='fetch_rss',
@@ -100,15 +117,23 @@ create_bundle = SimpleHttpOperator(
     http_conn_id='cloud_run_http',
     endpoint='/admin/bundles/create',
     method='POST',
-    data=json.dumps({
-        "topic": TOPIC,
-        "mode": "explainer",
+    data='''{
+        "topic": "''' + TOPIC + '''",
+        "mode": "{{ task_instance.xcom_pull(task_ids='select_mode', key='selected_mode') }}",
         "max_sources": 5,
-        "min_sources": 3,
-    }),
+        "min_sources": 3
+    }''',
     headers={'Content-Type': 'application/json'},
     dag=dag,
     do_xcom_push=True,
+)
+
+# Task 4b: Select mode for this run
+select_mode = PythonOperator(
+    task_id='select_mode',
+    python_callable=select_mode_for_run,
+    provide_context=True,
+    dag=dag,
 )
 
 # Task 5: Extract bundle_id from response
@@ -140,7 +165,5 @@ verify_storage = SimpleHttpOperator(
 )
 
 # Define task dependencies
-fetch_rss >> create_bundle
-fetch_newsdata >> create_bundle
-fetch_newsapi >> create_bundle
+[fetch_rss, fetch_newsdata, fetch_newsapi, select_mode] >> create_bundle
 create_bundle >> extract_id >> generate_article >> verify_storage
