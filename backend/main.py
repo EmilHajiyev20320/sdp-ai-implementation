@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 # Support running as "uvicorn main:app" from backend/ or "uvicorn backend.main:app" from root
 try:
     from backend.translator import generate_az_lede, translate_en_to_az, translate_en_to_az_long
-    from backend.text_writer import generate_english_title, write_english_article
+    from backend.text_writer import write_english_article
     from backend.gemini_client import gemini_configured
     from backend.prompts import build_writer_prompt
     from backend.article_validator import validate_article
@@ -41,7 +41,7 @@ try:
     from backend.bundle_creator import create_bundle_from_sources
 except ImportError:
     from translator import generate_az_lede, translate_en_to_az, translate_en_to_az_long
-    from text_writer import generate_english_title, write_english_article
+    from text_writer import write_english_article
     from gemini_client import gemini_configured
     from prompts import build_writer_prompt
     from article_validator import validate_article
@@ -186,9 +186,39 @@ def write_english(bundle: dict) -> dict:
     constraints = bundle.get("constraints", {})
     length_words = tuple(constraints.get("length_words", [400, 700]))
     prompt = build_writer_prompt(mode, topic, sources, length_words)
-    body_en = write_english_article(prompt)
-    title_en = generate_english_title(mode, topic, sources, body_en)
+    raw_text = write_english_article(prompt)
+    title_en, body_en = extract_title_and_body(raw_text, topic)
     return {"title_en": title_en, "body_en": body_en}
+
+
+def extract_title_and_body(text_en: str, topic: str) -> tuple[str, str]:
+    """Extract title from the first line when available, otherwise derive a concise fallback."""
+    text = (text_en or "").strip()
+    if not text:
+        return f"{topic}: Key Developments", ""
+
+    lines = [line.strip() for line in text.splitlines()]
+    first = lines[0] if lines else ""
+
+    # If the first line looks like a normal title, use it and remove it from body.
+    if first and len(first.split()) <= 14 and not re.search(r"https?://", first):
+        remainder = "\n".join(lines[1:]).lstrip()
+        if remainder.startswith("\n"):
+            remainder = remainder.lstrip("\n")
+        body = remainder.strip() or text
+        title = first.strip('"\' -')
+        return title or f"{topic}: Key Developments", body
+
+    # Fallback: derive a title from first sentence without another model call.
+    first_sentence_match = re.search(r".+?[.!?](?:\s|$)", text)
+    candidate = first_sentence_match.group(0).strip() if first_sentence_match else ""
+    candidate = re.sub(r"\s+", " ", candidate).strip('"\' -')
+    words = candidate.split()
+    if len(words) > 12:
+        candidate = " ".join(words[:12]).rstrip(".,;:!?")
+    if len(candidate.split()) < 4:
+        candidate = f"{topic}: Key Developments"
+    return candidate, text
 
 
 def translate_to_az(text_en: str) -> str:
@@ -198,9 +228,11 @@ def translate_to_az(text_en: str) -> str:
 
 def build_lede_az(title_en: str, body_en: str, body_az: str) -> str:
     """Build a short Azerbaijani lede that does not reuse the body opening verbatim."""
-    lede = generate_az_lede(title_en, body_en)
-    if lede and lede.strip():
-        return lede.strip()
+    # Optional separate LLM call for lede; disabled by default to keep latency low.
+    if os.environ.get("GENERATE_SEPARATE_AZ_LEDE", "").strip().lower() in ("1", "true", "yes", "on"):
+        lede = generate_az_lede(title_en, body_en)
+        if lede and lede.strip():
+            return lede.strip()
 
     # Fallback: use the first sentence of the translated body instead of the whole first paragraph.
     first_paragraph = (body_az or "").strip().split("\n\n")[0].strip()

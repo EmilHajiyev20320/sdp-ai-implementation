@@ -1,4 +1,5 @@
 """English → Azerbaijani: Gemini (GCP / API key)."""
+import os
 
 try:
     from backend.gemini_client import generate_content
@@ -31,9 +32,11 @@ def translate_en_to_az(text_en: str) -> str:
     return generate_content(prompt, temperature=0.15, max_output_tokens=2048)
 
 
-def translate_en_to_az_long(text_en: str, max_chunk_words: int = 80) -> str:
+def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) -> str:
     if not text_en or not text_en.strip():
         return ""
+    if max_chunk_words is None:
+        max_chunk_words = int(os.environ.get("TRANSLATE_MAX_CHUNK_WORDS", "140"))
     # For long text, chunk and translate each chunk with Gemini
     paragraphs = [p.strip() for p in text_en.split("\n\n") if p.strip()]
     if not paragraphs:
