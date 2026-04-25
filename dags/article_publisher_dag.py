@@ -6,7 +6,7 @@ Fetches from RSS, NewsData, NewsAPI → Creates bundle → Generates articles
 
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+import requests
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 import json
@@ -65,67 +65,83 @@ def select_mode_for_run(**context):
     print(f"Selected mode for hour={hour}: {mode}")
 
 
-# Task 1: Fetch from RSS feeds
-fetch_rss = SimpleHttpOperator(
-    task_id='fetch_rss',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/sources/fetch-rss',
-    method='POST',
-    data=json.dumps({
+
+def fetch_rss_callable(**context):
+    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-rss"
+    payload = {
         "topic": TOPIC,
         "random_feeds": True,
         "random_feed_count": 3,
         "max_entries": 20,
-    }),
-    headers={'Content-Type': 'application/json'},
+    }
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.text
+
+fetch_rss = PythonOperator(
+    task_id='fetch_rss',
+    python_callable=fetch_rss_callable,
+    provide_context=True,
     dag=dag,
 )
 
-# Task 2: Fetch from NewsData.io
-fetch_newsdata = SimpleHttpOperator(
+
+def fetch_newsdata_callable(**context):
+    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-newsdata"
+    payload = {
+        "topic": TOPIC,
+        "randomize": True,
+        "max_sources": 10,
+    }
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.text
+
+fetch_newsdata = PythonOperator(
     task_id='fetch_newsdata',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/sources/fetch-newsdata',
-    method='POST',
-    data=json.dumps({
-        "topic": TOPIC,
-        "randomize": True,
-        "max_sources": 10,
-    }),
-    headers={'Content-Type': 'application/json'},
+    python_callable=fetch_newsdata_callable,
+    provide_context=True,
     dag=dag,
 )
 
-# Task 3: Fetch from NewsAPI.org
-fetch_newsapi = SimpleHttpOperator(
+
+def fetch_newsapi_callable(**context):
+    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-newsapi"
+    payload = {
+        "topic": TOPIC,
+        "randomize": True,
+        "max_sources": 10,
+    }
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.text
+
+fetch_newsapi = PythonOperator(
     task_id='fetch_newsapi',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/sources/fetch-newsapi',
-    method='POST',
-    data=json.dumps({
-        "topic": TOPIC,
-        "randomize": True,
-        "max_sources": 10,
-    }),
-    headers={'Content-Type': 'application/json'},
+    python_callable=fetch_newsapi_callable,
+    provide_context=True,
     dag=dag,
 )
 
-# Task 4: Create bundle from stored sources
-create_bundle = SimpleHttpOperator(
-    task_id='create_bundle',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/bundles/create',
-    method='POST',
-    data='''{
-        "topic": "''' + TOPIC + '''",
-        "mode": "{{ task_instance.xcom_pull(task_ids='select_mode', key='selected_mode') }}",
+
+def create_bundle_callable(**context):
+    mode = context['task_instance'].xcom_pull(task_ids='select_mode', key='selected_mode')
+    url = f"{CLOUD_RUN_URL}/admin/bundles/create"
+    payload = {
+        "topic": TOPIC,
+        "mode": mode,
         "max_sources": 5,
         "min_sources": 3
-    }''',
-    headers={'Content-Type': 'application/json'},
+    }
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.text
+
+create_bundle = PythonOperator(
+    task_id='create_bundle',
+    python_callable=create_bundle_callable,
+    provide_context=True,
     dag=dag,
-    do_xcom_push=True,
 )
 
 # Task 4b: Select mode for this run
@@ -144,23 +160,33 @@ extract_id = PythonOperator(
     dag=dag,
 )
 
-# Task 6: Generate article from bundle
-generate_article = SimpleHttpOperator(
+
+def generate_article_callable(**context):
+    bundle_id = context['task_instance'].xcom_pull(task_ids='extract_bundle_id', key='bundle_id')
+    url = f"{CLOUD_RUN_URL}/admin/generate"
+    payload = {"bundle_id": bundle_id}
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.text
+
+generate_article = PythonOperator(
     task_id='generate_article',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/generate',
-    method='POST',
-    data='''{"bundle_id": "{{ task_instance.xcom_pull(task_ids='extract_bundle_id', key='bundle_id') }}"}''',
-    headers={'Content-Type': 'application/json'},
+    python_callable=generate_article_callable,
+    provide_context=True,
     dag=dag,
 )
 
-# Task 7: Verify article in Firestore (optional - just logs)
-verify_storage = SimpleHttpOperator(
+
+def verify_storage_callable(**context):
+    url = f"{CLOUD_RUN_URL}/admin/status"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    return resp.text
+
+verify_storage = PythonOperator(
     task_id='verify_storage',
-    http_conn_id='cloud_run_http',
-    endpoint='/admin/status',
-    method='GET',
+    python_callable=verify_storage_callable,
+    provide_context=True,
     dag=dag,
 )
 
