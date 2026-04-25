@@ -33,9 +33,11 @@ def write_english_article(prompt: str) -> str:
 
     body = generate_content(prompt, temperature=0.7, max_output_tokens=8192)
     if _looks_like_azerbaijani(body):
-        body = generate_content(prompt + retry_instruction, temperature=0.15, max_output_tokens=8192)
-    if _looks_like_azerbaijani(body):
-        body = generate_content(prompt + retry_instruction + "\n\nIf any non-English text appears, rewrite it in English.", temperature=0.0, max_output_tokens=8192)
+        body = generate_content(
+            prompt + retry_instruction + "\n\nIf any non-English text appears, rewrite it in English.",
+            temperature=0.2,
+            max_output_tokens=8192,
+        )
     if _looks_like_azerbaijani(body):
         body = translate_to_english(body)
     return body

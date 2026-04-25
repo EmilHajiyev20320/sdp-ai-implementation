@@ -24,8 +24,19 @@ def translate_en_to_az(text_en: str) -> str:
 def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) -> str:
     if not text_en or not text_en.strip():
         return ""
+    total_words = len(text_en.split())
+    single_call_max_words = int(os.environ.get("TRANSLATE_SINGLE_CALL_MAX_WORDS", "900"))
+
+    # Fast path: one model call avoids per-paragraph overhead for normal article sizes.
+    if total_words <= single_call_max_words:
+        return generate_content(
+            _TRANSLATE_INSTRUCTION + text_en.strip(),
+            temperature=0.15,
+            max_output_tokens=8192,
+        )
+
     if max_chunk_words is None:
-        max_chunk_words = int(os.environ.get("TRANSLATE_MAX_CHUNK_WORDS", "140"))
+        max_chunk_words = int(os.environ.get("TRANSLATE_MAX_CHUNK_WORDS", "260"))
     # For long text, chunk and translate each chunk with Gemini
     paragraphs = [p.strip() for p in text_en.split("\n\n") if p.strip()]
     if not paragraphs:

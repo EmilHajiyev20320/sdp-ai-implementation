@@ -100,7 +100,7 @@ db = firestore.Client(project=os.environ["GOOGLE_CLOUD_PROJECT"])
 # Word count limits (Ollama can vary; 350–750 allows some flexibility)
 MIN_WORDS = int(os.environ.get("ARTICLE_MIN_WORDS", "350"))
 MAX_WORDS = int(os.environ.get("ARTICLE_MAX_WORDS", "750"))
-ARTICLE_EXPAND_ATTEMPTS = int(os.environ.get("ARTICLE_EXPAND_ATTEMPTS", "4"))
+ARTICLE_EXPAND_ATTEMPTS = int(os.environ.get("ARTICLE_EXPAND_ATTEMPTS", "1"))
 
 
 @app.get("/admin/status")

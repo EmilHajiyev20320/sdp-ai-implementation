@@ -10,10 +10,15 @@ import requests
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 import json
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Configuration
 CLOUD_RUN_URL = Variable.get("CLOUD_RUN_URL", "https://ai-publisher-975738038281.us-central1.run.app")
 TOPIC = "technology"
+CONNECT_TIMEOUT_SECONDS = int(Variable.get("HTTP_CONNECT_TIMEOUT_SECONDS", "20"))
+READ_TIMEOUT_SECONDS = int(Variable.get("HTTP_READ_TIMEOUT_SECONDS", "300"))
 
 default_args = {
     'owner': 'airflow',
@@ -33,6 +38,38 @@ dag = DAG(
     catchup=False,
     tags=['ai-publisher', 'production'],
 )
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=2,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_HTTP = _build_session()
+
+
+def _request_json(method: str, endpoint: str, payload: dict | None = None) -> str:
+    url = f"{CLOUD_RUN_URL}{endpoint}"
+    start = time.perf_counter()
+    response = _HTTP.request(
+        method=method,
+        url=url,
+        json=payload,
+        timeout=(CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS),
+    )
+    elapsed = time.perf_counter() - start
+    print(f"{endpoint} completed in {elapsed:.2f}s status={response.status_code}")
+    response.raise_for_status()
+    return response.text
 
 
 # Helper function to extract bundle_id from response
@@ -67,16 +104,13 @@ def select_mode_for_run(**context):
 
 
 def fetch_rss_callable(**context):
-    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-rss"
     payload = {
         "topic": TOPIC,
         "random_feeds": True,
         "random_feed_count": 3,
         "max_entries": 20,
     }
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
-    return resp.text
+    return _request_json("POST", "/admin/sources/fetch-rss", payload)
 
 fetch_rss = PythonOperator(
     task_id='fetch_rss',
@@ -87,15 +121,12 @@ fetch_rss = PythonOperator(
 
 
 def fetch_newsdata_callable(**context):
-    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-newsdata"
     payload = {
         "topic": TOPIC,
         "randomize": True,
         "max_sources": 10,
     }
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
-    return resp.text
+    return _request_json("POST", "/admin/sources/fetch-newsdata", payload)
 
 fetch_newsdata = PythonOperator(
     task_id='fetch_newsdata',
@@ -106,15 +137,12 @@ fetch_newsdata = PythonOperator(
 
 
 def fetch_newsapi_callable(**context):
-    url = f"{CLOUD_RUN_URL}/admin/sources/fetch-newsapi"
     payload = {
         "topic": TOPIC,
         "randomize": True,
         "max_sources": 10,
     }
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
-    return resp.text
+    return _request_json("POST", "/admin/sources/fetch-newsapi", payload)
 
 fetch_newsapi = PythonOperator(
     task_id='fetch_newsapi',
@@ -126,16 +154,13 @@ fetch_newsapi = PythonOperator(
 
 def create_bundle_callable(**context):
     mode = context['task_instance'].xcom_pull(task_ids='select_mode', key='selected_mode')
-    url = f"{CLOUD_RUN_URL}/admin/bundles/create"
     payload = {
         "topic": TOPIC,
         "mode": mode,
         "max_sources": 5,
         "min_sources": 3
     }
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
-    return resp.text
+    return _request_json("POST", "/admin/bundles/create", payload)
 
 create_bundle = PythonOperator(
     task_id='create_bundle',
@@ -163,11 +188,17 @@ extract_id = PythonOperator(
 
 def generate_article_callable(**context):
     bundle_id = context['task_instance'].xcom_pull(task_ids='extract_bundle_id', key='bundle_id')
-    url = f"{CLOUD_RUN_URL}/admin/generate"
     payload = {"bundle_id": bundle_id}
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
-    return resp.text
+    response_text = _request_json("POST", "/admin/generate", payload)
+    try:
+        response_json = json.loads(response_text)
+    except json.JSONDecodeError:
+        response_json = {}
+    article_id = response_json.get("article_id")
+    if article_id:
+        context['task_instance'].xcom_push(key='article_id', value=article_id)
+        print(f"Generated article_id: {article_id}")
+    return response_text
 
 generate_article = PythonOperator(
     task_id='generate_article',
@@ -178,10 +209,7 @@ generate_article = PythonOperator(
 
 
 def verify_storage_callable(**context):
-    url = f"{CLOUD_RUN_URL}/admin/status"
-    resp = requests.get(url)
-    resp.raise_for_status()
-    return resp.text
+    return _request_json("GET", "/admin/status")
 
 verify_storage = PythonOperator(
     task_id='verify_storage',
