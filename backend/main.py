@@ -13,6 +13,7 @@ from google.cloud import firestore
 import os
 import re
 import requests
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -496,6 +497,7 @@ def create_bundle(req: CreateBundleRequest):
 
 @app.post("/admin/generate")
 def generate(req: GenerateRequest):
+    total_start = time.perf_counter()
     bundle_ref = db.collection("bundles").document(req.bundle_id)
     bundle_doc = bundle_ref.get()
     if not bundle_doc.exists:
@@ -506,7 +508,11 @@ def generate(req: GenerateRequest):
 
     try:
         # 1) Write in English (Gemini)
+        step_start = time.perf_counter()
         out_en = write_english(bundle)
+        print(f"generate step=write_english bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f}")
+
+        step_start = time.perf_counter()
         body_en, length_meta = fit_english_body_to_word_range(
             out_en["body_en"],
             sources,
@@ -515,12 +521,19 @@ def generate(req: GenerateRequest):
             max_expand_attempts=ARTICLE_EXPAND_ATTEMPTS,
         )
         out_en["body_en"] = body_en
+        print(f"generate step=fit_length bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f} expand_attempts={length_meta.get('expand_attempts')}")
 
         # 2) Translate to Azerbaijani (Gemini)
+        step_start = time.perf_counter()
         title_az = translate_to_az(out_en["title_en"])
+        print(f"generate step=translate_title bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f}")
+
+        step_start = time.perf_counter()
         body_az = translate_body_to_az(out_en["body_en"])
+        print(f"generate step=translate_body bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f}")
 
         # 3) Validate before storage (reject if checks fail)
+        step_start = time.perf_counter()
         ok, details = validate_article(
             out_en["body_en"],
             body_az,
@@ -529,6 +542,7 @@ def generate(req: GenerateRequest):
             max_words_en=MAX_WORDS,
             min_words_az=50,
         )
+        print(f"generate step=validate bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f} ok={ok}")
         if not ok:
             payload = {
                 "ok": False,
@@ -566,7 +580,10 @@ def generate(req: GenerateRequest):
             "published_at": datetime.now(timezone.utc).isoformat(),
             "quality_flags": {**details.get("flags", {}), "length_adjustment": length_meta},
         }
+        step_start = time.perf_counter()
         db.collection("articles").document(article_id).set(article)
+        print(f"generate step=store_article bundle_id={req.bundle_id} duration_s={time.perf_counter() - step_start:.2f}")
+        print(f"generate step=total bundle_id={req.bundle_id} duration_s={time.perf_counter() - total_start:.2f} article_id={article_id}")
 
         return {
             "ok": True,

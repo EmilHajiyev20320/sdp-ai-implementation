@@ -57,7 +57,12 @@ def _build_session() -> requests.Session:
 _HTTP = _build_session()
 
 
-def _request_json(method: str, endpoint: str, payload: dict | None = None) -> str:
+def _request_json(
+    method: str,
+    endpoint: str,
+    payload: dict | None = None,
+    require_ok: bool = False,
+) -> str:
     url = f"{CLOUD_RUN_URL}{endpoint}"
     start = time.perf_counter()
     response = _HTTP.request(
@@ -69,7 +74,15 @@ def _request_json(method: str, endpoint: str, payload: dict | None = None) -> st
     elapsed = time.perf_counter() - start
     print(f"{endpoint} completed in {elapsed:.2f}s status={response.status_code}")
     response.raise_for_status()
-    return response.text
+    text = response.text
+    if require_ok:
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("ok") is False:
+            raise ValueError(f"{endpoint} returned ok=false: {data.get('error', 'unknown error')}")
+    return text
 
 
 # Helper function to extract bundle_id from response
@@ -110,7 +123,7 @@ def fetch_rss_callable(**context):
         "random_feed_count": 3,
         "max_entries": 20,
     }
-    return _request_json("POST", "/admin/sources/fetch-rss", payload)
+    return _request_json("POST", "/admin/sources/fetch-rss", payload, require_ok=True)
 
 fetch_rss = PythonOperator(
     task_id='fetch_rss',
@@ -126,7 +139,7 @@ def fetch_newsdata_callable(**context):
         "randomize": True,
         "max_sources": 10,
     }
-    return _request_json("POST", "/admin/sources/fetch-newsdata", payload)
+    return _request_json("POST", "/admin/sources/fetch-newsdata", payload, require_ok=True)
 
 fetch_newsdata = PythonOperator(
     task_id='fetch_newsdata',
@@ -142,7 +155,7 @@ def fetch_newsapi_callable(**context):
         "randomize": True,
         "max_sources": 10,
     }
-    return _request_json("POST", "/admin/sources/fetch-newsapi", payload)
+    return _request_json("POST", "/admin/sources/fetch-newsapi", payload, require_ok=True)
 
 fetch_newsapi = PythonOperator(
     task_id='fetch_newsapi',
@@ -160,7 +173,7 @@ def create_bundle_callable(**context):
         "max_sources": 5,
         "min_sources": 3
     }
-    return _request_json("POST", "/admin/bundles/create", payload)
+    return _request_json("POST", "/admin/bundles/create", payload, require_ok=True)
 
 create_bundle = PythonOperator(
     task_id='create_bundle',
@@ -189,7 +202,7 @@ extract_id = PythonOperator(
 def generate_article_callable(**context):
     bundle_id = context['task_instance'].xcom_pull(task_ids='extract_bundle_id', key='bundle_id')
     payload = {"bundle_id": bundle_id}
-    response_text = _request_json("POST", "/admin/generate", payload)
+    response_text = _request_json("POST", "/admin/generate", payload, require_ok=True)
     try:
         response_json = json.loads(response_text)
     except json.JSONDecodeError:
