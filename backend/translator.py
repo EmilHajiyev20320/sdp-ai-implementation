@@ -17,13 +17,15 @@ English:
 def translate_en_to_az(text_en: str) -> str:
     if not text_en or not text_en.strip():
         return ""
+    max_tokens = int(os.environ.get("TRANSLATE_MAX_OUTPUT_TOKENS", "3072"))
     prompt = _TRANSLATE_INSTRUCTION + text_en.strip()
-    return generate_content(prompt, temperature=0.15, max_output_tokens=2048)
+    return generate_content(prompt, temperature=0.15, max_output_tokens=max_tokens)
 
 
 def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) -> str:
     if not text_en or not text_en.strip():
         return ""
+    max_tokens = int(os.environ.get("TRANSLATE_MAX_OUTPUT_TOKENS", "3072"))
     total_words = len(text_en.split())
     single_call_max_words = int(os.environ.get("TRANSLATE_SINGLE_CALL_MAX_WORDS", "900"))
 
@@ -32,7 +34,7 @@ def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) ->
         return generate_content(
             _TRANSLATE_INSTRUCTION + text_en.strip(),
             temperature=0.15,
-            max_output_tokens=8192,
+            max_output_tokens=max_tokens,
         )
 
     if max_chunk_words is None:
@@ -51,7 +53,7 @@ def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) ->
                 result = generate_content(
                     _TRANSLATE_INSTRUCTION + para.strip(),
                     temperature=0.15,
-                    max_output_tokens=2048,
+                    max_output_tokens=max_tokens,
                 )
                 translated.append(result)
             except Exception as e:
@@ -75,7 +77,7 @@ def translate_en_to_az_long(text_en: str, max_chunk_words: int | None = None) ->
                     result = generate_content(
                         _TRANSLATE_INSTRUCTION + chunk.strip(),
                         temperature=0.15,
-                        max_output_tokens=2048,
+                        max_output_tokens=max_tokens,
                     )
                     translated.append(result)
                 except Exception as e:

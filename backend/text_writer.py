@@ -1,5 +1,6 @@
 """Article writer: Gemini (GCP / API key)."""
 import re
+import os
 
 try:
     from backend.gemini_client import generate_content
@@ -25,18 +26,19 @@ def translate_to_english(text: str) -> str:
 
 
 def write_english_article(prompt: str) -> str:
+    max_tokens = int(os.environ.get("WRITER_MAX_OUTPUT_TOKENS", "3072"))
     retry_instruction = (
         "\n\nIMPORTANT: Generate the entire article in English only. "
         "Do not use any Azerbaijani characters or Azerbaijani words such as və, ilə, də, ki, bir, bu, hər, sizin, bizim, onun, Azərbaycan, Bakı. "
         "Use only the basic Latin alphabet and no special Azerbaijani letters."
     )
 
-    body = generate_content(prompt, temperature=0.7, max_output_tokens=8192)
+    body = generate_content(prompt, temperature=0.7, max_output_tokens=max_tokens)
     if _looks_like_azerbaijani(body):
         body = generate_content(
             prompt + retry_instruction + "\n\nIf any non-English text appears, rewrite it in English.",
             temperature=0.2,
-            max_output_tokens=8192,
+            max_output_tokens=max_tokens,
         )
     if _looks_like_azerbaijani(body):
         body = translate_to_english(body)

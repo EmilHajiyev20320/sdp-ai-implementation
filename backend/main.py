@@ -98,9 +98,11 @@ app = FastAPI()
 db = firestore.Client(project=os.environ["GOOGLE_CLOUD_PROJECT"])
 
 # Word count limits (Ollama can vary; 350–750 allows some flexibility)
-MIN_WORDS = int(os.environ.get("ARTICLE_MIN_WORDS", "350"))
-MAX_WORDS = int(os.environ.get("ARTICLE_MAX_WORDS", "750"))
-ARTICLE_EXPAND_ATTEMPTS = int(os.environ.get("ARTICLE_EXPAND_ATTEMPTS", "1"))
+MIN_WORDS = int(os.environ.get("ARTICLE_MIN_WORDS", "280"))
+MAX_WORDS = int(os.environ.get("ARTICLE_MAX_WORDS", "560"))
+ARTICLE_EXPAND_ATTEMPTS = int(os.environ.get("ARTICLE_EXPAND_ATTEMPTS", "0"))
+PROMPT_TARGET_MIN_WORDS = int(os.environ.get("PROMPT_TARGET_MIN_WORDS", "300"))
+PROMPT_TARGET_MAX_WORDS = int(os.environ.get("PROMPT_TARGET_MAX_WORDS", "520"))
 
 
 @app.get("/admin/status")
@@ -184,7 +186,12 @@ def write_english(bundle: dict) -> dict:
     topic = bundle.get("topic", "Technology")
     sources = bundle.get("sources", [])
     constraints = bundle.get("constraints", {})
-    length_words = tuple(constraints.get("length_words", [400, 700]))
+    raw_lo, raw_hi = tuple(constraints.get("length_words", [400, 700]))
+    lo = max(200, min(raw_lo, PROMPT_TARGET_MIN_WORDS))
+    hi = min(raw_hi, PROMPT_TARGET_MAX_WORDS)
+    if hi <= lo:
+        hi = lo + 40
+    length_words = (lo, hi)
     prompt = build_writer_prompt(mode, topic, sources, length_words)
     raw_text = write_english_article(prompt)
     title_en, body_en = extract_title_and_body(raw_text, topic)
